@@ -33,6 +33,8 @@ MAX_CONCURRENCY = max(1, int(os.getenv("UGOCR_VLM_MAX_CONCURRENCY", "1")))
 WARMUP_ENABLED = os.getenv("UGOCR_VLM_WARMUP", "true").strip().lower() in {"1", "true", "yes", "on"}
 WARMUP_MAX_TOKENS = max(1, int(os.getenv("UGOCR_VLM_WARMUP_MAX_TOKENS", "8")))
 EMPTY_CACHE_AFTER_REQUEST = os.getenv("UGOCR_VLM_EMPTY_CACHE", "false").strip().lower() in {"1", "true", "yes", "on"}
+CPU_OFFLOAD = os.getenv("UGOCR_VLM_CPU_OFFLOAD", "false").strip().lower() in {"1", "true", "yes", "on"}
+MAX_GPU_LAYERS = int(os.getenv("UGOCR_VLM_MAX_GPU_LAYERS", "0"))
 
 app = FastAPI(title="Local VLM Server")
 
@@ -100,11 +102,48 @@ def load_model():
 
     if is_awq:
         print("Detected AWQ quantization, loading without BitsAndBytesConfig...")
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            str(MODEL_PATH),
-            attn_implementation="eager",
-            device_map={"": 0},
-        )
+        # AWQ models require gptqmodel package. If not installed, temporarily
+        # remove quantization_config from config.json to bypass the check.
+        # AWQ weights can still be loaded by transformers natively.
+        import shutil
+        config_path_str = str(config_path)
+        backup_path = config_path_str + ".bak"
+        config_modified = False
+        try:
+            import importlib
+            importlib.import_module("gptqmodel")
+            print("gptqmodel found, loading normally...")
+        except ImportError:
+            print("gptqmodel not found, bypassing AWQ check...")
+            shutil.copy2(config_path_str, backup_path)
+            with open(config_path_str, "r") as f:
+                cfg_data = _json.load(f)
+            cfg_data.pop("quantization_config", None)
+            with open(config_path_str, "w") as f:
+                _json.dump(cfg_data, f, indent=2)
+            config_modified = True
+
+        try:
+            if CPU_OFFLOAD:
+                gpu_mem = f"{MAX_GPU_LAYERS}GiB" if MAX_GPU_LAYERS > 0 else "4GiB"
+                print(f"CPU offloading enabled, max GPU memory: {gpu_mem}")
+                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    str(MODEL_PATH),
+                    torch_dtype=torch.float16,
+                    attn_implementation="eager",
+                    device_map="auto",
+                    max_memory={0: gpu_mem, "cpu": "12GiB"},
+                )
+            else:
+                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    str(MODEL_PATH),
+                    torch_dtype=torch.float16,
+                    attn_implementation="eager",
+                    device_map={"": 0},
+                )
+        finally:
+            if config_modified and os.path.exists(backup_path):
+                shutil.move(backup_path, config_path_str)
     else:
         print("Using 8-bit BitsAndBytes quantization...")
         quantization_config = BitsAndBytesConfig(load_in_8bit=True)
@@ -221,6 +260,8 @@ async def health():
         "max_pixels": MAX_PIXELS,
         "max_new_tokens": MAX_NEW_TOKENS,
         "max_concurrency": MAX_CONCURRENCY,
+        "cpu_offload": CPU_OFFLOAD,
+        "max_gpu_layers": MAX_GPU_LAYERS,
         "warmup_enabled": WARMUP_ENABLED,
         "warmed_up": model_warmed_up,
         "loaded_seconds_ago": None if model_loaded_at is None else round(time.time() - model_loaded_at, 3),
