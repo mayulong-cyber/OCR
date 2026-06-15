@@ -239,17 +239,12 @@ class VLMPostProcessor:
             ],
         }
         prompt = (
-            "You are an offline handwriting OCR correction engine. "
-            "The image is a contact sheet of cropped text line images, each labeled [0], [1], etc. "
-            "For each candidate line, compare the cropped image with the OCR text. "
-            "Only correct characters that are visually wrong based on the image evidence. "
-            "Do NOT add, remove, translate, or summarize characters. "
-            "If you cannot clearly determine the correct character, keep the original OCR text and set changed=false. "
-            "confidence represents visual evidence certainty (0 to 1), not language fluency. "
-            "Return a JSON array with one entry per candidate, in the same order. "
-            "Output compact JSON only, no markdown:\n"
-            '[{"text":"corrected text","confidence":0.0,"changed":true,"reason":"brief reason"}]\n'
-            f"Candidates: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
+            "Handwriting OCR corrector. Image shows cropped lines labeled [0],[1],... "
+            "Compare each image with OCR text. Only fix clearly wrong characters. "
+            "Do not add/remove/translate. If unsure, keep original and set changed=false. "
+            "Return JSON array, one per candidate, same order. No markdown.\n"
+            '[{"text":"...","confidence":0.0,"changed":false,"reason":"..."}]\n'
+            f"OCR: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
         )
 
         contact_pil = load_image(contact_sheet_bytes).image
@@ -260,7 +255,7 @@ class VLMPostProcessor:
             response = self._chat(
                 contact_sheet_bytes,
                 prompt,
-                max_tokens=min(self.settings.max_tokens, self.settings.correction_max_tokens),
+                max_tokens=self.settings.correction_max_tokens,
                 timeout_override=timeout_sec,
             )
             elapsed = time.perf_counter() - started_at

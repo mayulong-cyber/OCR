@@ -150,7 +150,7 @@ class Settings:
             line_score_threshold=float(os.getenv("UGOCR_VLM_LINE_SCORE_THRESHOLD", str(_nested(data, "vlm", "line_score_threshold", default=0.92)))),
             max_lines_per_image=_env_int("UGOCR_VLM_MAX_LINES_PER_IMAGE", int(_nested(data, "vlm", "max_lines_per_image", default=3))),
             min_text_len=_env_int("UGOCR_VLM_MIN_TEXT_LEN", int(_nested(data, "vlm", "min_text_len", default=2))),
-            correction_max_tokens=_env_int("UGOCR_VLM_CORRECTION_MAX_TOKENS", int(_nested(data, "vlm", "correction_max_tokens", default=128))),
+            correction_max_tokens=_env_int("UGOCR_VLM_CORRECTION_MAX_TOKENS", int(_nested(data, "vlm", "correction_max_tokens", default=256))),
             correction_timeout_sec=_env_int("UGOCR_VLM_CORRECTION_TIMEOUT_SEC", int(_nested(data, "vlm", "correction_timeout_sec", default=35))),
             cache_size=_env_int("UGOCR_VLM_CACHE_SIZE", int(_nested(data, "vlm", "cache_size", default=128))),
         )
