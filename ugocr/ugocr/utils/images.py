@@ -155,3 +155,72 @@ def pil_to_png_bytes(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def crop_line_image(image: Image.Image, box: list[tuple[float, float]], padding: int = 12) -> Image.Image | None:
+    if not box or len(box) < 2:
+        return None
+    try:
+        xs = [p[0] for p in box]
+        ys = [p[1] for p in box]
+        left = max(0, int(min(xs)) - padding)
+        top = max(0, int(min(ys)) - padding)
+        right = min(image.width, int(max(xs)) + padding)
+        bottom = min(image.height, int(max(ys)) + padding)
+        if right <= left or bottom <= top:
+            return None
+        return image.crop((left, top, right, bottom)).convert("RGB")
+    except Exception:
+        return None
+
+
+def create_contact_sheet(
+    line_images: list[Image.Image],
+    max_width: int = 768,
+    max_height: int = 1024,
+    label_font_size: int = 20,
+    spacing: int = 8,
+) -> bytes | None:
+    if not line_images:
+        return None
+
+    scaled: list[Image.Image] = []
+    for img in line_images:
+        w, h = img.size
+        if w > max_width:
+            ratio = max_width / w
+            img = img.resize((max_width, int(h * ratio)), Image.Resampling.LANCZOS)
+        scaled.append(img)
+
+    label_width = 40
+    total_height = spacing
+    for i, img in enumerate(scaled):
+        row_height = img.height + spacing
+        if total_height + row_height > max_height:
+            break
+        total_height += row_height
+    else:
+        i = len(scaled) - 1
+
+    usable_count = i + 1
+    sheet = Image.new("RGB", (label_width + max_width, total_height), (255, 255, 255))
+
+    from PIL import ImageDraw, ImageFont
+
+    draw = ImageDraw.Draw(sheet)
+    try:
+        font = ImageFont.truetype("arial.ttf", label_font_size)
+    except Exception:
+        font = ImageFont.load_default()
+
+    y_offset = spacing
+    for idx in range(usable_count):
+        img = scaled[idx]
+        label = f"[{idx}]"
+        draw.text((4, y_offset + 2), label, fill=(0, 0, 0), font=font)
+        sheet.paste(img, (label_width, y_offset))
+        y_offset += img.height + spacing
+
+    buffer = io.BytesIO()
+    sheet.save(buffer, format="JPEG", quality=85, optimize=True)
+    return buffer.getvalue()

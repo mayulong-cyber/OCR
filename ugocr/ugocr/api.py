@@ -148,6 +148,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "warnings": result.warnings,
                 }
             )
+            if result.vlm_debug is not None:
+                dbg = result.vlm_debug
+                body.update(
+                    {
+                        "vlm_candidate_lines": dbg.vlm_candidate_lines,
+                        "vlm_called": dbg.vlm_called,
+                        "vlm_cache_hit": dbg.vlm_cache_hit,
+                        "vlm_elapsed_sec": dbg.vlm_elapsed_sec,
+                        "vlm_timeout_sec": dbg.vlm_timeout_sec,
+                        "vlm_input_image_size": list(dbg.vlm_input_image_size),
+                        "vlm_accepted_lines": dbg.vlm_accepted_lines,
+                        "vlm_rejected_lines": dbg.vlm_rejected_lines,
+                        "vlm_skipped_reason": dbg.vlm_skipped_reason,
+                    }
+                )
             return JSONResponse(content=body)
         return body
 

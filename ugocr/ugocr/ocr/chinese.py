@@ -3,7 +3,7 @@
 from ugocr.config import Settings
 from ugocr.ocr.paddle_engine import PaddleOCRTextEngine
 from ugocr.ocr.postprocess import VLMPostProcessor
-from ugocr.ocr.types import OCRLine, PipelineResult
+from ugocr.ocr.types import OCRLine, PipelineResult, VLMDebugMetadata
 from ugocr.utils.images import load_image, sort_text_boxes
 from ugocr.utils.text import join_lines, normalize_cjk
 
@@ -41,7 +41,13 @@ class ChineseHandwritingPipeline:
         ]
         if use_vlm is not True:
             text = join_lines([line.text for line in lines])
-            return PipelineResult(text=text, lines=lines, corrected=False, warnings=["VLM postprocess skipped by request."])
+            return PipelineResult(
+                text=text,
+                lines=lines,
+                corrected=False,
+                warnings=["VLM postprocess skipped by request."],
+                vlm_debug=VLMDebugMetadata(vlm_skipped_reason="use_vlm=false"),
+            )
         vlm_result = self.postprocessor.correct_text_lines("zh", image_bytes, lines)
         final_lines = [
             OCRLine(text=normalize_cjk(vlm_result.lines[idx]), score=line.score, box=line.box, engine=line.engine)
@@ -52,4 +58,5 @@ class ChineseHandwritingPipeline:
             lines=final_lines,
             corrected=vlm_result.corrected,
             warnings=vlm_result.warnings,
+            vlm_debug=vlm_result.vlm_debug,
         )

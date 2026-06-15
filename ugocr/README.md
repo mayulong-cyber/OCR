@@ -94,13 +94,27 @@ powershell -ExecutionPolicy Bypass -File scripts\create_https_cert.ps1 -IpAddres
 
 **终端 1 - 启动 VLM 服务（可选）：**
 ```cmd
-set UGOCR_VLM_WARMUP=true && set UGOCR_VLM_MAX_CONCURRENCY=1 && set UGOCR_VLM_MAX_NEW_TOKENS=512 && python vlm_server.py
+cd /d E:\OCR_Z_T\ugocr
+set UGOCR_VLM_WARMUP=true
+set UGOCR_VLM_MAX_CONCURRENCY=1
+set UGOCR_VLM_MAX_NEW_TOKENS=256
+python vlm_server.py
 ```
 
-**终端 2 - 启动 OCR 服务：**
+**终端 2 - 启动 OCR 服务（推荐带 VLM 优化参数）：**
 ```cmd
+cd /d E:\OCR_Z_T\ugocr
 set UGOCR_CONFIG=configs\ugocr.example.yaml
-python -m ugocr
+set UGOCR_USE_GPU=true
+set UGOCR_DEVICE=cuda
+set UGOCR_VLM_TIMEOUT_SEC=120
+set UGOCR_VLM_LINE_SCORE_THRESHOLD=0.92
+set UGOCR_VLM_MAX_LINES_PER_IMAGE=3
+set UGOCR_VLM_MIN_TEXT_LEN=2
+set UGOCR_VLM_CORRECTION_MAX_TOKENS=128
+set UGOCR_VLM_CORRECTION_TIMEOUT_SEC=35
+set UGOCR_VLM_CACHE_SIZE=128
+python -m ugocr.api
 ```
 
 **Windows CMD 推荐启动命令：**
@@ -151,14 +165,19 @@ curl -k -X POST https://172.25.144.4:8090/api/v1/ocr/table \
 
 **Windows CMD 测试命令：**
 ```cmd
-curl.exe -k -X POST "https://172.25.144.4:8090/api/v1/ocr/recognize" -H "appKey: test_key" -F "file=@wtest2.png" -F "source_lang=ch"
+REM OCR-only 测试
+curl.exe -k -X POST "https://127.0.0.1:8090/api/v1/ocr/recognize" -H "appKey: test_key" -F "file=@wtest6.png" -F "source_lang=ch" -F "use_vlm=false" -F "debug=true"
 
-curl.exe -k -X POST "https://172.25.144.4:8090/api/v1/ocr/recognize" -H "appKey: test_key" -F "file=@wtest2.png" -F "source_lang=ch" -F "use_vlm=true"
+REM OCR+VLM 测试（含 debug 信息）
+curl.exe -k -X POST "https://127.0.0.1:8090/api/v1/ocr/recognize" -H "appKey: test_key" -F "file=@wtest6.png" -F "source_lang=ch" -F "use_vlm=true" -F "debug=true"
 
-curl.exe -k -X POST "https://172.25.144.4:8090/api/v1/translate/text" -H "appKey: test_key" -H "Content-Type: application/json" -d "{\"texts\":[\"سلام\"],\"target_lang\":\"ch\"}"
+REM 翻译测试
+curl.exe -k -X POST "https://127.0.0.1:8090/api/v1/translate/text" -H "appKey: test_key" -H "Content-Type: application/json" -d "{\"texts\":[\"سلام\"],\"target_lang\":\"ch\"}"
 
-curl.exe -k -X POST "https://172.25.144.4:8090/api/v1/ocr/table" -H "appKey: test_key" -F "file=@table.png" -F "source_lang=ch" -o result.xlsx
+REM 表格测试
+curl.exe -k -X POST "https://127.0.0.1:8090/api/v1/ocr/table" -H "appKey: test_key" -F "file=@table.png" -F "source_lang=ch" -o result.xlsx
 
+REM VLM 服务健康检查
 curl.exe "http://127.0.0.1:8001/health"
 ```
 
@@ -255,7 +274,21 @@ POST /api/v1/translate/text
 - `use_vlm=true` — 启用 VLM 纠错/增强
 - `use_vlm=false` 或不传 — 仅使用 PaddleOCR 原始结果，满足接口响应时间要求
 
-说明：VLM 适合离线纠错或二阶段复核，不应作为规范接口的默认实时路径。VLM 服务启动时会默认执行一次小生成预热，并默认限制为单并发，避免首次请求和并发请求造成明显延迟或显存峰值。
+### VLM 纠错优化
+
+VLM 纠错经过以下优化，只在有价值的场景参与纠错：
+
+1. **低置信行路由**：只有 OCR 置信度 score < 阈值（默认 0.92）的行才进入 VLM 候选。所有行高置信时直接跳过 VLM。
+2. **候选行数限制**：单张图片最多处理 `UGOCR_VLM_MAX_LINES_PER_IMAGE`（默认 3）个低置信行，优先选择 score 最低的行。
+3. **Contact Sheet 合并调用**：将候选行裁剪图拼成一张 contact sheet，一次性发给 VLM，避免多次调用的推理开销。
+4. **独立超时**：手写纠错使用 `UGOCR_VLM_CORRECTION_TIMEOUT_SEC`（默认 35 秒），不影响全局超时。
+5. **结果缓存**：LRU 缓存 VLM 纠错结果，同一图片重复请求时直接命中缓存。
+6. **验收规则**：VLM 返回结果经过严格验收（JSON 解析、文本长度、置信度、异常字符），低置信或异常结果不会污染 OCR 原结果。
+7. **debug 输出**：`debug=true` 时可查看 VLM 候选行、调用状态、缓存命中、耗时等详细信息。
+
+### VLM 适用场景
+
+VLM 适合离线纠错或二阶段复核，不应作为规范接口的默认实时路径。VLM 服务启动时会默认执行一次小生成预热，并默认限制为单并发，避免首次请求和并发请求造成明显延迟或显存峰值。
 
 ### VLM 模型
 
@@ -300,6 +333,12 @@ vlm:
   max_tokens: 512
   temperature: 0.0
   request_timeout_sec: 120
+  line_score_threshold: 0.92
+  max_lines_per_image: 3
+  min_text_len: 2
+  correction_max_tokens: 128
+  correction_timeout_sec: 35
+  cache_size: 128
 
 auth:
   enabled: true
@@ -328,6 +367,12 @@ auth:
 | `UGOCR_VLM_MAX_CONCURRENCY` | VLM 服务最大并发请求数 | 1 |
 | `UGOCR_VLM_MAX_NEW_TOKENS` | VLM 服务单次生成最大 token | 512 |
 | `UGOCR_VLM_MAX_PIXELS` | VLM 服务接收图片的最大像素 token 约束 | `832*28*28` |
+| `UGOCR_VLM_LINE_SCORE_THRESHOLD` | 低置信行阈值，score 低于此值的行才调用 VLM | 0.92 |
+| `UGOCR_VLM_MAX_LINES_PER_IMAGE` | 单张图片最多调用 VLM 的行数 | 3 |
+| `UGOCR_VLM_MIN_TEXT_LEN` | 进入 VLM 候选的最小文本长度 | 2 |
+| `UGOCR_VLM_CORRECTION_MAX_TOKENS` | 手写纠错 VLM 最大输出 token | 128 |
+| `UGOCR_VLM_CORRECTION_TIMEOUT_SEC` | 手写纠错 VLM 超时时间（秒） | 35 |
+| `UGOCR_VLM_CACHE_SIZE` | VLM 纠错结果 LRU 缓存大小 | 128 |
 | `UGOCR_HOST` | API 绑定地址 | `0.0.0.0` |
 | `UGOCR_PORT` | API 端口 | `8090` |
 | `UGOCR_SSL_CERTFILE` | HTTPS 证书文件 | `certs/server.crt`（存在时自动使用） |
@@ -362,6 +407,9 @@ python scripts/smoke_api.py --config configs/ugocr.example.yaml --only translate
 
 # 真实接口预热，可选择是否调用 VLM
 python scripts/warmup.py --api-url https://172.25.144.4:8090 --app-key test_key --chinese-image wtest2.png --table-image table.png --use-vlm false
+
+# 离线评测：OCR-only vs OCR+VLM（对比 CER 和耗时）
+python scripts/eval_handwriting_vlm.py --image-dir data/eval/handwriting/images --gt data/eval/handwriting/groundtruth.json
 ```
 
 **Windows CMD 回归命令：**
@@ -370,6 +418,9 @@ python scripts\verify_models.py --config configs\ugocr.example.yaml
 python scripts\smoke_api.py --config configs\ugocr.example.yaml --only all --max-seconds 5
 python scripts\smoke_api.py --config configs\ugocr.example.yaml --only translate --max-seconds 30
 python scripts\warmup.py --api-url https://172.25.144.4:8090 --app-key test_key --chinese-image wtest2.png --use-vlm true --timeout 120
+
+REM 离线评测
+python scripts\eval_handwriting_vlm.py --image-dir data\eval\handwriting\images --gt data\eval\handwriting\groundtruth.json
 ```
 
 ## 生产环境部署
