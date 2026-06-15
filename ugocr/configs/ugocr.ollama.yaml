@@ -1,0 +1,27 @@
+runtime:
+  use_gpu: false
+  device: cpu
+  lazy_load_models: false
+  upload_dir: data/uploads
+  output_dir: data/outputs
+  max_upload_mb: 10
+
+paddle:
+  det_model_dir: models/ppocrv5_det
+  chinese_rec_model_dir: models/ppocrv5_chinese_svtrv2_rec
+  table_rec_model_dir: models/ppocrv5_table_rec
+  table_model_dir: models/slanet
+  chinese_char_dict_path: ""
+  table_char_dict_path: ""
+  use_angle_cls: true
+  det_limit_side_len: 1920
+
+vlm:
+  enabled: true
+  provider: ollama
+  base_url: http://localhost:11434
+  model: qwen2.5vl:3b
+  api_key: ""
+  max_tokens: 512
+  temperature: 0.0
+  request_timeout_sec: 120

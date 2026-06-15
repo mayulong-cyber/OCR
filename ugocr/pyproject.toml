@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ugocr"
+version = "0.1.0"
+description = "Offline OCR API for handwritten Chinese and table images to Excel."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+authors = [{ name = "UGOCR" }]
+dependencies = [
+  "fastapi>=0.111",
+  "uvicorn[standard]>=0.30",
+  "python-multipart>=0.0.9",
+  "pydantic>=2.7",
+  "Pillow>=10.3",
+  "numpy>=1.26,<2",
+  "opencv-python-headless>=4.9,<4.13",
+  "PyYAML>=6.0",
+  "requests>=2.32",
+  "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+paddle = ["paddlex>=3.0", "paddleocr>=3.0", "paddlepaddle>=3.0"]
+vlm = ["vllm>=0.5"]
+
+[project.scripts]
+ugocr-api = "ugocr.api:main"
+
+[tool.setuptools.packages.find]
+include = ["ugocr*"]

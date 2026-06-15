@@ -1,0 +1,145 @@
+你是一个资深 Python 工程师。请在 E:\OCR_Z_T\ugocr 项目中改造 OCR + VLM 手写汉字纠错逻辑，目标是让 VLM 真正只在有价值的场景参与纠错，而不是无条件增加延迟。要求完全离线，不调用任何外部 API。
+
+当前项目关键信息：
+- FastAPI 入口：ugocr/api.py
+- 中文手写识别流水线：ugocr/ocr/chinese.py
+- VLM 后处理：ugocr/ocr/postprocess.py
+- OCRLine 类型：ugocr/ocr/types.py
+- 图片工具：ugocr/utils/images.py
+- 当前接口通过 form 参数 use_vlm=true/false 控制是否启用 VLM
+- 当前 VLM 是 OpenAI-compatible 本地服务，base_url 在 configs/ugocr.example.yaml 里配置
+- 当前问题：VLM 调用耗时长，但对手写汉字纠错效果差，甚至会把 OCR 结果改得更差
+
+请按以下方案改造。
+
+一、增加“低置信行才调用 VLM”的路由
+1. 在 ugocr/ocr/postprocess.py 中新增一个可配置阈值逻辑：
+   - 只有 OCRLine.score < 0.92 的行才进入 VLM 纠错候选。
+   - 如果整张图所有行 score 都 >= 0.92，直接跳过 VLM，返回 OCR 原结果。
+   - 返回 warnings 中注明：VLM skipped because all lines are high confidence.
+2. 阈值要支持环境变量：
+   - UGOCR_VLM_LINE_SCORE_THRESHOLD，默认 0.92。
+3. 不要破坏现有 use_vlm=true/false 语义：
+   - use_vlm=false：完全不调用 VLM。
+   - use_vlm=true：只对低置信行调用 VLM。
+
+二、把“整图纠错”改成“低置信行裁剪纠错”
+1. 利用 OCRLine.box 从原图中裁剪对应文字行。
+2. 如果 box 为空或裁剪失败，才退回整图。
+3. 每次只把单行裁剪图发给 VLM，而不是整张图片。
+4. 对每个低置信行单独调用 VLM，prompt 只包含该行 OCR 文本和行图像。
+5. 行图像预处理：
+   - 增加白边 padding，建议 8 到 16 像素。
+   - 行裁剪图最大边控制在 768。
+   - 保留 RGB，不要过度压缩到看不清字。
+6. 这样做的目标是提升 VLM 对单行手写字的视觉聚焦，同时降低每次图像 token 压力。
+
+三、修改 VLM prompt 和 schema
+每个低置信行使用这个 schema：
+
+{
+  "text": "纠错后的单行文本",
+  "confidence": 0.0,
+  "changed": true,
+  "reason": "简短说明"
+}
+
+prompt 要求：
+- 你是离线手写汉字 OCR 纠错器。
+- 只能纠正图像中明确可见的字符错误。
+- 不允许补充图像中不存在的字。
+- 不允许翻译、总结、扩写。
+- 如果无法明确判断，必须返回原 OCR 文本，并设置 changed=false。
+- confidence 代表视觉证据置信度，不是语言流畅度。
+- 输出必须是 JSON，不要 markdown。
+
+四、增加确定性验收规则，避免 VLM 乱改
+在 ugocr/ocr/postprocess.py 中实现 accept/reject 逻辑：
+1. 如果 VLM 返回 JSON 解析失败，保留 OCR 原行。
+2. 如果 text 为空，保留 OCR 原行。
+3. 如果 changed=true 但 confidence < 0.75，保留 OCR 原行。
+4. 如果纠错后文本长度和原文本长度差异超过 30%，保留 OCR 原行。
+5. 如果纠错后包含明显非中文异常符号，保留 OCR 原行。
+6. 如果通过验收，替换该行文本。
+7. warnings 中记录每行处理情况，例如：
+   - line 1 accepted by VLM, confidence=0.82
+   - line 2 rejected: low confidence
+   - line 3 skipped: high OCR score
+
+五、保留最终响应兼容
+1. /api/v1/ocr/recognize 的普通返回格式不要变：
+   {
+     "target_lang": "ch",
+     "result": [...]
+   }
+2. debug=true 时增加更详细字段：
+   - use_vlm_requested
+   - vlm_enabled
+   - corrected
+   - warnings
+   - vlm_called_lines
+   - vlm_accepted_lines
+   - vlm_elapsed_sec
+3. 如果不方便改 PipelineResult 类型，可以先把这些调试信息追加到 warnings 中，但优先建议扩展 PipelineResult，保持结构清晰。
+
+六、增加离线评测脚本
+新增 scripts/eval_handwriting_vlm.py，要求：
+1. 输入目录结构：
+   data/eval/handwriting/images/*.png
+   data/eval/handwriting/groundtruth.json
+2. groundtruth.json 格式：
+   {
+     "wtest6.png": ["最是一年春好处", "绝胜烟柳满皇都"]
+   }
+3. 脚本分别调用：
+   - OCR-only
+   - OCR+VLM
+4. 输出每张图：
+   - OCR-only 结果
+   - OCR+VLM 结果
+   - groundtruth
+   - CER 字符错误率
+   - latency
+5. 输出汇总：
+   - OCR-only 平均 CER
+   - OCR+VLM 平均 CER
+   - 是否提升
+   - 平均耗时增加多少
+6. 如果 OCR+VLM 没有提升，要明确打印：
+   VLM did not improve accuracy on this eval set.
+
+七、增加 cmd 验证命令到 README.md
+补充以下命令：
+
+启动 VLM：
+cd /d E:\OCR_Z_T\ugocr
+set UGOCR_VLM_WARMUP=true
+set UGOCR_VLM_MAX_CONCURRENCY=1
+set UGOCR_VLM_MAX_NEW_TOKENS=256
+python vlm_server.py
+
+启动 OCR API：
+cd /d E:\OCR_Z_T\ugocr
+set UGOCR_CONFIG=configs\ugocr.example.yaml
+set UGOCR_USE_GPU=true
+set UGOCR_DEVICE=cuda
+set UGOCR_VLM_TIMEOUT_SEC=120
+set UGOCR_VLM_LINE_SCORE_THRESHOLD=0.92
+python -m ugocr.api
+
+OCR-only 测试：
+curl.exe -k -X POST "https://127.0.0.1:8090/api/v1/ocr/recognize" -H "appKey: test_key" -F "file=@wtest6.png" -F "source_lang=ch" -F "use_vlm=false" -F "debug=true"
+
+OCR+VLM 测试：
+curl.exe -k -X POST "https://127.0.0.1:8090/api/v1/ocr/recognize" -H "appKey: test_key" -F "file=@wtest6.png" -F "source_lang=ch" -F "use_vlm=true" -F "debug=true"
+
+离线评测：
+python scripts\eval_handwriting_vlm.py --image-dir data\eval\handwriting\images --gt data\eval\handwriting\groundtruth.json
+
+八、验收标准
+1. python -m py_compile ugocr\ocr\postprocess.py ugocr\ocr\chinese.py ugocr\api.py scripts\eval_handwriting_vlm.py 必须通过。
+2. use_vlm=false 时绝不调用 VLM。
+3. use_vlm=true 时只对低置信行调用 VLM。
+4. debug=true 能看到哪些行调用了 VLM、哪些被接受、哪些被拒绝。
+5. VLM 返回低置信或异常结构时不能污染 OCR 原结果。
+6. 评测脚本能明确比较 OCR-only 和 OCR+VLM 的 CER 与耗时。

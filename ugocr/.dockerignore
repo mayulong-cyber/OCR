@@ -1,0 +1,68 @@
+# Python bytecode and caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Git
+.git/
+.gitattributes
+
+# Environment files (keep examples)
+.env
+.env.local
+.env.prod
+
+# Logs
+*.log
+logs/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Project data (runtime generated)
+data/uploads/*
+data/outputs/*
+
+# Training assets (not needed at runtime)
+training/
+
+# Tests (not needed at runtime)
+tests/
+
+# Scripts (not needed at runtime)
+scripts/
+
+# Large media / test fixtures
+*.png
+*.jpg
+*.jpeg
+*.xlsm
+table.*
+
+# Documentation (not needed at runtime)
+README.md
+CHANGELOG.md
+
+# Gitignore itself
+.gitignore
+.dockerignore

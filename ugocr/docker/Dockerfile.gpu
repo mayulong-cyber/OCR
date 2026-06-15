@@ -1,0 +1,33 @@
+FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+
+# Build-time arguments
+ARG UGOCR_CONFIG=configs/ugocr.example.yaml
+ARG UGOCR_HOST=0.0.0.0
+ARG UGOCR_PORT=8000
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UGOCR_CONFIG=${UGOCR_CONFIG} \
+    UGOCR_HOST=${UGOCR_HOST} \
+    UGOCR_PORT=${UGOCR_PORT} \
+    UGOCR_DEVICE=cuda \
+    UGOCR_USE_GPU=true
+
+WORKDIR /app
+COPY wheelhouse /wheelhouse
+COPY requirements-base.txt requirements-gpu.txt pyproject.toml /app/
+COPY ugocr /app/ugocr
+COPY configs /app/configs
+
+# Install with offline wheelhouse fallback to online PyPI
+RUN if [ -n "$(ls -A /wheelhouse/*.whl 2>/dev/null)" ]; then \
+        python -m pip install --no-index --find-links=/wheelhouse -r requirements-gpu.txt && \
+        python -m pip install --no-index --find-links=/wheelhouse -e . ; \
+    else \
+        echo "wheelhouse is empty, falling back to online PyPI..." && \
+        python -m pip install -r requirements-gpu.txt && \
+        python -m pip install -e . ; \
+    fi
+
+EXPOSE ${UGOCR_PORT}
+CMD ["python", "-m", "ugocr.api"]

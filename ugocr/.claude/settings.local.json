@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xxd \"E:/OCR_Z_T/ugocr/tests/test_text_metrics.py\")",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python -m py_compile ugocr/api.py)",
+      "Bash(python -m py_compile ugocr/config.py)",
+      "Bash(python -m py_compile ugocr/schemas.py)",
+      "Bash(python -m py_compile ugocr/model_check.py)",
+      "Bash(python -m py_compile ugocr/ocr/factory.py)"
+    ]
+  }
+}

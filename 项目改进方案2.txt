@@ -1,0 +1,121 @@
+你是一个资深 Python 工程师。请在 E:\OCR_Z_T\ugocr 项目中优化 OCR + VLM 手写汉字识别接口的响应时间，同时保持完全离线，不调用任何外部 API。
+
+当前问题：
+- use_vlm=true 时会显著增加响应时间。
+- 当前 VLM 对整图进行纠错，耗时约 30-50 秒。
+- VLM 纠错效果不稳定，所以必须减少无效调用。
+- 目标是只在必要时调用 VLM，并尽可能减少单次 VLM 输入大小和输出 token。
+
+项目关键文件：
+- ugocr/api.py
+- ugocr/ocr/chinese.py
+- ugocr/ocr/postprocess.py
+- ugocr/ocr/types.py
+- ugocr/utils/images.py
+- configs/ugocr.example.yaml
+- README.md
+- vlm_server.py
+
+请按以下方案修改。
+
+一、增加 VLM 调用路由，避免无效调用
+1. 在 VLM 后处理逻辑中增加 OCR 置信度筛选。
+2. 新增环境变量：
+   - UGOCR_VLM_LINE_SCORE_THRESHOLD，默认 0.92。
+   - UGOCR_VLM_MAX_LINES_PER_IMAGE，默认 3。
+   - UGOCR_VLM_MIN_TEXT_LEN，默认 2。
+3. use_vlm=true 时，不要默认调用 VLM。
+4. 只有满足以下条件的行才进入 VLM 候选：
+   - OCRLine.score < UGOCR_VLM_LINE_SCORE_THRESHOLD
+   - 文本长度 >= UGOCR_VLM_MIN_TEXT_LEN
+   - 行数不超过 UGOCR_VLM_MAX_LINES_PER_IMAGE，优先选择 score 最低的行
+5. 如果没有候选行，直接返回 OCR 结果，warnings 中写：
+   VLM skipped: no low-confidence lines.
+
+二、将多行候选合并成一次 VLM 调用，而不是每行调用一次
+1. 不要对每个低置信行单独调用 VLM，因为多次请求会重复产生模型推理开销。
+2. 从原图中裁剪候选行。
+3. 把候选行裁剪图拼成一张竖向 contact sheet。
+4. 每个裁剪行左侧或上方加一个清晰编号，例如 [0]、[1]、[2]。
+5. 一次性把 contact sheet 和候选 OCR 文本发给 VLM。
+6. VLM 返回多个候选行的纠错结果。
+7. 这样把 N 次 VLM 调用压缩为 1 次，优先优化总耗时。
+
+三、行裁剪图像优化
+1. 使用 OCRLine.box 裁剪行图像。
+2. 如果 box 为空或裁剪失败，则跳过该行，不要回退整图，避免重新扩大输入。
+3. 裁剪后增加 12px 白边 padding。
+4. contact sheet 最大宽度控制在 768。
+5. contact sheet 最大高度控制在 1024。
+6. 图片编码为 JPEG，quality=85。
+7. 如果候选行太多，只保留分数最低的前 UGOCR_VLM_MAX_LINES_PER_IMAGE 行。
+
+四、缩短 VLM 输出
+1. 手写纠错 max_tokens 不要使用全局 512。
+2. 新增环境变量：
+   - UGOCR_VLM_CORRECTION_MAX_TOKENS，默认 128。
+3. correct_text_lines 调用 VLM 时使用：
+   max_tokens=min(settings.max_tokens, UGOCR_VLM_CORRECTION_MAX_TOKENS)
+4. prompt 中要求 compact JSON，不允许解释性长文本。
+
+五、增加快速失败机制
+1. 新增环境变量：
+   - UGOCR_VLM_CORRECTION_TIMEOUT_SEC，默认 35。
+2. 手写纠错调用 VLM 时使用该超时，不要直接使用全局 120 秒。
+3. 如果 VLM 超时，立即回退 OCR 原结果。
+4. warnings 中写：
+   VLM timeout after xx seconds; kept OCR result.
+5. 全局 UGOCR_VLM_TIMEOUT_SEC 可保留给表格或翻译使用。
+
+六、增加结果缓存
+1. 新增内存 LRU cache，缓存 VLM 纠错结果。
+2. cache key 使用：
+   - 原图 sha256
+   - 候选 OCR 文本
+   - 候选行 index
+   - VLM model name
+3. cache size 默认 128。
+4. 新增环境变量：
+   - UGOCR_VLM_CACHE_SIZE，默认 128。
+5. 命中缓存时不调用 VLM，warnings 中写：
+   VLM cache hit.
+
+七、优化 debug 输出
+debug=true 时返回或 warnings 中包含：
+- vlm_candidate_lines
+- vlm_called
+- vlm_cache_hit
+- vlm_elapsed_sec
+- vlm_timeout_sec
+- vlm_input_image_size
+- vlm_accepted_lines
+- vlm_rejected_lines
+- vlm_skipped_reason
+
+如果不方便改 schema，可以先放入 warnings，但优先扩展 PipelineResult 的 debug metadata。
+
+八、更新 README.md 的 CMD 命令
+补充推荐启动参数：
+
+set UGOCR_VLM_LINE_SCORE_THRESHOLD=0.92
+set UGOCR_VLM_MAX_LINES_PER_IMAGE=3
+set UGOCR_VLM_MIN_TEXT_LEN=2
+set UGOCR_VLM_CORRECTION_MAX_TOKENS=128
+set UGOCR_VLM_CORRECTION_TIMEOUT_SEC=35
+set UGOCR_VLM_CACHE_SIZE=128
+set UGOCR_VLM_MAX_NEW_TOKENS=256
+set UGOCR_VLM_MAX_CONCURRENCY=1
+
+九、验收标准
+1. python -m py_compile ugocr\ocr\postprocess.py ugocr\ocr\chinese.py ugocr\api.py 必须通过。
+2. use_vlm=false 时绝不调用 VLM。
+3. use_vlm=true 且所有 OCR 行高置信时，不调用 VLM。
+4. use_vlm=true 且存在低置信行时，只调用一次 VLM。
+5. debug=true 能看到 VLM 是否被调用、耗时、候选行数量、是否命中缓存。
+6. 同一张图片重复请求时，第二次应命中缓存，响应时间明显下降。
+7. VLM 超时时接口不能阻塞超过 UGOCR_VLM_CORRECTION_TIMEOUT_SEC 太多。
+8. 普通接口响应格式保持兼容：
+   {
+     "target_lang": "ch",
+     "result": [...]
+   }

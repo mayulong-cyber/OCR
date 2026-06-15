@@ -1,0 +1,5 @@
+-r requirements-base.txt
+paddlepaddle-gpu>=2.6.0,<3.0
+paddlex>=3.0
+paddleocr>=3.0
+vllm>=0.5

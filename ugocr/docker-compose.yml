@@ -1,0 +1,47 @@
+﻿services:
+  # VLM 服务 - Qwen2.5-VL-7B-AWQ
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: ugocr-vllm
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./models/qwen2.5-vl-7b-instruct-awq:/models/qwen2.5-vl-7b-instruct-awq
+    command: >
+      --model /models/qwen2.5-vl-7b-instruct-awq
+      --port 8001
+      --host 0.0.0.0
+      --gpu-memory-utilization 0.2
+      --max-model-len 1024
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+    #   interval: 30s
+    #   timeout: 30s
+    #   retries: 5
+
+  # OCR 服务
+  ocr:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gpu
+    container_name: ugocr-ocr
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./models:/app/models
+      - ./configs:/app/configs
+      - ./data:/app/data
+    environment:
+      - UGOCR_CONFIG=configs/ugocr.example.yaml
+      - UGOCR_PORT=8090
+      - UGOCR_VLM_ENABLED=false
+    depends_on: []
+    restart: unless-stopped
