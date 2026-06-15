@@ -231,37 +231,29 @@ class VLMPostProcessor:
 
         valid_texts = [line.text for _, line in valid_candidates]
         valid_indices = [idx for idx, _ in valid_candidates]
-        payload = {
-            "language": language,
-            "candidates": [
-                {"index": i, "text": line.text, "ocr_score": round(line.score, 4)}
-                for i, (_, line) in enumerate(valid_candidates)
-            ],
-        }
-        prompt = (
-            "Handwriting OCR corrector. Image shows cropped lines labeled [0],[1],... "
-            "Compare each image with OCR text. Only fix clearly wrong characters. "
-            "Do not add/remove/translate. If unsure, keep original and set changed=false. "
-            "Return JSON array, one per candidate, same order. No markdown.\n"
-            '[{"text":"...","confidence":0.0,"changed":false,"reason":"..."}]\n'
-            f"OCR: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
-        )
 
         contact_pil = load_image(contact_sheet_bytes).image
         input_size = (contact_pil.width, contact_pil.height)
         started_at = time.perf_counter()
         timeout_sec = self.settings.correction_timeout_sec
         try:
-            response = self._chat(
+            # Two-step approach: Step 1 - VLM reads image independently
+            read_prompt = (
+                "Read the Chinese text in each cropped image labeled [0],[1],... "
+                "Output only the characters for each line, one per line. No extra text."
+            )
+            read_response = self._chat(
                 contact_sheet_bytes,
-                prompt,
+                read_prompt,
                 max_tokens=self.settings.correction_max_tokens,
                 timeout_override=timeout_sec,
             )
             elapsed = time.perf_counter() - started_at
-            data = json.loads(extract_json(response))
-            corrected_texts, accepted, rejected = self._apply_acceptance_rules(
-                valid_texts, data
+
+            # Step 2: Parse VLM readings and compare with OCR
+            vlm_readings = _parse_vlm_readings(read_response, len(valid_candidates))
+            corrected_texts, accepted, rejected = _compare_and_correct(
+                valid_texts, vlm_readings, valid_candidates
             )
 
             final = list(original)
@@ -277,7 +269,7 @@ class VLMPostProcessor:
                 elif idx in rejected:
                     warnings.append(f"line {idx} rejected: {rejected[idx]}")
                 else:
-                    warnings.append(f"line {idx} skipped")
+                    warnings.append(f"line {idx} unchanged")
             warnings.append(f"VLM correction elapsed {elapsed:.3f}s; changed={str(any_changed).lower()}.")
 
             self._cache.put(cache_key, (corrected_texts, any_changed, warnings))
@@ -334,7 +326,16 @@ class VLMPostProcessor:
 
             text = str(item.get("text", "")).strip()
             confidence = _bounded_float(item.get("confidence"), 0.0)
-            changed = bool(item.get("changed", False))
+
+            # Infer changed from text difference if not explicitly provided
+            if "changed" in item:
+                changed = bool(item["changed"])
+            else:
+                changed = text != original_texts[i]
+
+            # Infer confidence if not provided but text differs
+            if confidence == 0.0 and changed:
+                confidence = 0.80
 
             if not text:
                 rejected[i] = "empty text"
@@ -428,6 +429,62 @@ class VLMPostProcessor:
         if "response" in data:
             return str(data["response"])
         raise ValueError(f"Unexpected Ollama response: {data}")
+
+
+def _parse_vlm_readings(response: str, expected_count: int) -> list[str]:
+    lines = [line.strip() for line in response.strip().split("\n") if line.strip()]
+    cleaned: list[str] = []
+    for line in lines:
+        line = line.strip()
+        if line.startswith("[") or line.startswith("{"):
+            continue
+        if line.startswith("```"):
+            continue
+        cleaned.append(line)
+    while len(cleaned) < expected_count:
+        cleaned.append("")
+    return cleaned[:expected_count]
+
+
+def _compare_and_correct(
+    ocr_texts: list[str],
+    vlm_readings: list[str],
+    candidates: list[tuple[int, "OCRLine"]],
+) -> tuple[list[str], dict[int, float], dict[int, str]]:
+    corrected = list(ocr_texts)
+    accepted: dict[int, float] = {}
+    rejected: dict[int, str] = {}
+
+    for i, (ocr_text, vlm_text) in enumerate(zip(ocr_texts, vlm_readings)):
+        if not vlm_text or vlm_text == ocr_text:
+            continue
+
+        ocr_chars = list(ocr_text)
+        vlm_chars = list(vlm_text)
+
+        if len(ocr_chars) != len(vlm_chars):
+            rejected[i] = f"length mismatch (OCR={len(ocr_chars)}, VLM={len(vlm_chars)})"
+            continue
+
+        diff_count = sum(1 for a, b in zip(ocr_chars, vlm_chars) if a != b)
+        if diff_count == 0:
+            continue
+
+        max_diff = max(1, len(ocr_chars) // 3)
+        if diff_count > max_diff:
+            rejected[i] = f"too many differences ({diff_count} > {max_diff})"
+            continue
+
+        ocr_score = candidates[i][1].score if i < len(candidates) else 1.0
+        if ocr_score >= 0.95 and diff_count > 1:
+            rejected[i] = f"OCR high confidence ({ocr_score:.2f}) with {diff_count} diffs"
+            continue
+
+        confidence = 0.80 if diff_count == 1 else 0.70
+        corrected[i] = vlm_text
+        accepted[i] = confidence
+
+    return corrected, accepted, rejected
 
 
 def _has_non_chinese_anomaly(text: str) -> bool:

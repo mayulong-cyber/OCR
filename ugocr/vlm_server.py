@@ -22,7 +22,8 @@ from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, Bits
 from qwen_vl_utils import process_vision_info
 import uvicorn
 
-MODEL_PATH = Path(__file__).parent / "models" / "qwen2.5-vl-3b-instruct"
+_MODEL_NAME = os.getenv("UGOCR_VLM_MODEL_NAME", "qwen2.5-vl-3b-instruct")
+MODEL_PATH = Path(__file__).parent / "models" / _MODEL_NAME
 HOST = "0.0.0.0"
 PORT = 8001
 MIN_PIXELS = int(os.getenv("UGOCR_VLM_MIN_PIXELS", str(128 * 28 * 28)))
@@ -76,6 +77,7 @@ class ChatResponse(BaseModel):
 def load_model():
     global model, processor, model_loaded_at
     print(f"Loading model from {MODEL_PATH}...")
+    print(f"Model name: {_MODEL_NAME}")
     print(f"Device: {'cuda' if torch.cuda.is_available() else 'cpu'}")
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for the local VLM server.")
@@ -87,17 +89,31 @@ def load_model():
         max_pixels=MAX_PIXELS,
     )
 
-    # 8-bit quantization config
-    quantization_config = BitsAndBytesConfig(
-        load_in_8bit=True,
-    )
+    # Auto-detect quantization: AWQ models have quantization_config in config.json
+    import json as _json
+    config_path = MODEL_PATH / "config.json"
+    is_awq = False
+    if config_path.exists():
+        with open(config_path, "r") as f:
+            cfg = _json.load(f)
+        is_awq = cfg.get("quantization_config", {}).get("quant_method") == "awq"
 
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        str(MODEL_PATH),
-        quantization_config=quantization_config,
-        attn_implementation="eager",
-        device_map={"": 0},
-    )
+    if is_awq:
+        print("Detected AWQ quantization, loading without BitsAndBytesConfig...")
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            str(MODEL_PATH),
+            attn_implementation="eager",
+            device_map={"": 0},
+        )
+    else:
+        print("Using 8-bit BitsAndBytes quantization...")
+        quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            str(MODEL_PATH),
+            quantization_config=quantization_config,
+            attn_implementation="eager",
+            device_map={"": 0},
+        )
 
     model.eval()
     model_loaded_at = time.time()
@@ -200,7 +216,7 @@ async def startup():
 async def health():
     return {
         "status": "ok" if model is not None else "loading",
-        "model": "qwen2.5-vl-3b-instruct",
+        "model": _MODEL_NAME,
         "device": "cuda",
         "max_pixels": MAX_PIXELS,
         "max_new_tokens": MAX_NEW_TOKENS,
@@ -217,7 +233,7 @@ async def list_models():
     return {
         "data": [
             {
-                "id": "qwen2.5-vl-3b-instruct",
+                "id": _MODEL_NAME,
                 "object": "model",
                 "owned_by": "local"
             }
